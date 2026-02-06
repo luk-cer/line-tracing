@@ -13,6 +13,8 @@ class ImageProcessor:
         self.original_grayscale = None  # For MSE calculation
         self.sinogram = None
         self.angles = None
+        self.coord_cache = {}  # Cache for (phi, theta) -> (row, col) mappings
+        self.sinogram_value_cache = {}  # Cache for (phi, theta) -> value
 
     def load(self, image_path):
         """
@@ -58,6 +60,10 @@ class ImageProcessor:
 
         # Apply mask to inverted image
         self.processed_image = inverted * mask
+
+        # Store backup for Radon recalculation
+        self.original_processed_image = self.processed_image.copy()
+
         self.image = img
 
         return self.processed_image
@@ -81,11 +87,87 @@ class ImageProcessor:
         # Compute Radon transform
         self.sinogram = radon(self.processed_image, theta=self.angles, circle=True)
 
+        # Build coordinate cache ONCE (geometric mapping, doesn't change)
+        if not self.coord_cache:
+            self._build_coord_cache()
+
+        # Build/rebuild value cache (depends on sinogram values)
+        self._build_value_cache()
+
         return self.sinogram
+
+    def _build_coord_cache(self):
+        """
+        Pre-calculate sinogram coordinates for all phi/theta combinations.
+        This is geometric mapping and only needs to be done ONCE.
+        """
+        self.coord_cache.clear()
+
+        print("  Building coordinate cache...")
+
+        num_rows, num_cols = self.sinogram.shape
+
+        # Vectorized coordinate calculation
+        all_phis = np.arange(360, dtype=np.float64)
+        all_thetas = self.angles.astype(np.float64)
+
+        phi_grid, theta_grid = np.meshgrid(all_phis, all_thetas, indexing='ij')
+
+        phi_norm = phi_grid % 360
+        theta_norm = theta_grid % 180
+        r = np.sin((phi_norm - theta_norm) * np.pi / 180.0)
+
+        rows = (r + 1) * num_rows / 2.0
+        cols = theta_norm * num_cols / 180.0
+
+        # Store coordinates in cache
+        for phi_idx in range(360):
+            for theta_idx, theta in enumerate(all_thetas):
+                key = (round(all_phis[phi_idx], 1), round(theta, 3))
+                self.coord_cache[key] = (rows[phi_idx, theta_idx], cols[phi_idx, theta_idx])
+
+    def _build_value_cache(self):
+        """
+        Pre-calculate interpolated sinogram values using cached coordinates.
+        This needs to be rebuilt whenever sinogram values change (Radon recalc).
+        """
+        self.sinogram_value_cache.clear()
+
+        print("  Building value cache...")
+
+        # Collect all coordinates from coord_cache for vectorized interpolation
+        all_phis = np.arange(360, dtype=np.float64)
+        all_thetas = self.angles.astype(np.float64)
+
+        # Build arrays of row/col coordinates for ALL (phi, theta) pairs
+        rows_list = []
+        cols_list = []
+
+        for phi_idx in range(360):
+            for theta in all_thetas:
+                key = (round(all_phis[phi_idx], 1), round(theta, 3))
+                row, col = self.coord_cache[key]
+                rows_list.append(row)
+                cols_list.append(col)
+
+        # Single vectorized interpolation call (replaces 360k individual calls!)
+        coords = np.array([rows_list, cols_list])
+        all_values = map_coordinates(self.sinogram, coords, order=1, mode='nearest')
+
+        # Reshape and store in cache
+        all_values = all_values.reshape(360, len(all_thetas))
+
+        for phi_idx in range(360):
+            phi_key = round(all_phis[phi_idx], 1)
+            self.sinogram_value_cache[phi_key] = {
+                'values': all_values[phi_idx, :],
+                'thetas': all_thetas
+            }
 
     def map_polar_to_sinogram(self, phi, theta):
         """
         Map polar coordinates (phi, theta) to sinogram coordinates.
+        Uses pre-calculated cache for common values for performance.
 
         Args:
             phi: Angle of point on unit circle (degrees, 0-360)
@@ -106,6 +188,12 @@ class ImageProcessor:
         phi = phi % 360
         theta = theta % 180
 
+        # Try cache lookup first (for integer phi and theta in angles array)
+        cache_key = (round(phi, 1), round(theta, 3))
+        if cache_key in self.coord_cache:
+            return self.coord_cache[cache_key]
+
+        # Calculate if not in cache
         # Calculate perpendicular distance from origin to line
         # r = sin(phi - theta) for unit circle
         r = np.sin((phi - theta) * np.pi / 180.0)
@@ -234,19 +322,41 @@ class ImageProcessor:
         if traced_lines is None:
             traced_lines = set()
 
-        # Search over all theta values in the sinogram
+        # Use pre-computed cache for fast argmax lookup
+        phi_key = round(phi % 360, 1)
+        cached_data = self.sinogram_value_cache.get(phi_key)
+
+        if cached_data is not None:
+            values = cached_data['values'].copy()  # Copy to avoid modifying cache
+            thetas = cached_data['thetas']
+
+            # Mask out already traced lines
+            if traced_lines:
+                for i, theta in enumerate(thetas):
+                    row, col = self.map_polar_to_sinogram(phi, theta)
+                    row_key = round(row, 1)
+                    col_key = round(col, 1)
+                    if (row_key, col_key) in traced_lines:
+                        values[i] = -np.inf
+
+            # Use numpy argmax to find best theta in O(1)
+            max_idx = np.argmax(values)
+            max_value = values[max_idx]
+
+            if max_value == -np.inf:
+                raise ValueError(f"No valid theta found for phi={phi:.2f}deg (all lines already traced)")
+
+            return (float(thetas[max_idx]), float(max_value))
+
+        # Fallback to loop-based method if cache not available
         max_value = -np.inf
         max_theta = 0
 
         for theta in self.angles:
-            # Get sinogram coordinates for this (phi, theta)
             row, col = self.map_polar_to_sinogram(phi, theta)
-
-            # Round to nearest integer for comparison (with tolerance)
             row_key = round(row, 1)
             col_key = round(col, 1)
 
-            # Skip if this line has already been traced
             if (row_key, col_key) in traced_lines:
                 continue
 
@@ -255,7 +365,6 @@ class ImageProcessor:
                 max_value = value
                 max_theta = theta
 
-        # Check if we found a valid theta
         if max_value == -np.inf:
             raise ValueError(f"No valid theta found for phi={phi:.2f}deg (all lines already traced)")
 
@@ -309,18 +418,20 @@ class ImageProcessor:
 
         return (float(global_max_phi), float(global_max_theta), float(global_max_value))
 
-    def traverse_circle(self, num_steps=10, avoid_traced=True):
+    def traverse_circle(self, num_steps=10, avoid_traced=True, recalc_radon_every=50):
         """
         Traverse circle by following maximum sinogram values.
 
         Starts from global maximum and traverses the circle by:
         1. Crossing to exit point
         2. Finding best theta at exit point (excluding already traced lines)
-        3. Repeating for num_steps
+        3. Every N steps, erases last N lines and recalculates Radon transform
+        4. Repeating for num_steps
 
         Args:
             num_steps: Number of steps to traverse (default: 10)
             avoid_traced: If True, avoids retracing lines (default: True)
+            recalc_radon_every: Recalculate Radon transform every N lines (default: 50)
 
         Returns:
             List of (phi, theta, value) tuples representing the path
@@ -331,6 +442,9 @@ class ImageProcessor:
         """
         if self.sinogram is None:
             raise ValueError("No sinogram available. Call calculate_sinogram() first.")
+
+        if self.original_processed_image is None:
+            raise ValueError("No backup image available. Call load() first.")
 
         # Track traced lines if avoiding them
         traced_lines = set() if avoid_traced else None
@@ -366,6 +480,24 @@ class ImageProcessor:
 
             # Add to path
             path.append((phi_exit, theta_new, value_new))
+
+            # Recalculate Radon transform every N lines
+            if recalc_radon_every > 0 and len(path) % recalc_radon_every == 0:
+                print(f"  Recalculating Radon transform at step {len(path)}...")
+
+                # Reset processed image from backup
+                self.processed_image = self.original_processed_image.copy()
+
+                # Erase only the last N lines
+                start_idx = max(0, len(path) - recalc_radon_every)
+                lines_to_erase = path[start_idx:]
+                self.erase_lines_from_image(lines_to_erase)
+
+                # Recalculate sinogram with erased lines
+                self.sinogram = radon(self.processed_image, theta=self.angles, circle=True)
+
+                # Rebuild only VALUE cache (coordinates don't change)
+                self._build_value_cache()
 
             # Update current position
             phi = phi_exit
@@ -423,6 +555,103 @@ class ImageProcessor:
             result_img.show()
 
         return result_img
+
+    def calculate_mse(self, path):
+        """
+        Calculate Mean Squared Error between rendered lines and original grayscale image.
+
+        Args:
+            path: List of (phi, theta, value) tuples from traverse_circle
+
+        Returns:
+            float: MSE value
+        """
+        if self.original_grayscale is None:
+            raise ValueError("No original grayscale image available. Call load() first.")
+
+        # Render lines on white background (same size as original)
+        rendered = self.draw_traversal(path, output_path=None)
+
+        # Convert PIL image to numpy array and normalize
+        rendered_array = np.array(rendered.convert('L'), dtype=np.float32) / 255.0
+
+        # Calculate MSE (both images are [0, 1] range)
+        mse = np.mean((rendered_array - self.original_grayscale) ** 2)
+
+        return float(mse)
+
+    def erase_lines_from_image(self, path):
+        """
+        Erase traced lines from processed image by setting them to 0 (white).
+
+        Args:
+            path: List of (phi, theta, value) tuples representing lines to erase
+        """
+        if self.processed_image is None:
+            raise ValueError("No processed image available.")
+
+        height, width = self.processed_image.shape
+        center_y, center_x = height // 2, width // 2
+        radius = min(center_x, center_y)
+
+        # For each line, draw it as white (0) on the processed image
+        for phi, theta, value in path:
+            try:
+                # Get entry point
+                phi_rad = phi * np.pi / 180.0
+                entry_x = int(center_x + radius * np.cos(phi_rad))
+                entry_y = int(center_y + radius * np.sin(phi_rad))
+
+                # Get exit point
+                phi_exit = self.get_exit_point(phi, theta)
+                phi_exit_rad = phi_exit * np.pi / 180.0
+                exit_x = int(center_x + radius * np.cos(phi_exit_rad))
+                exit_y = int(center_y + radius * np.sin(phi_exit_rad))
+
+                # Draw line by setting pixels to 0 (white) using Bresenham algorithm
+                self._draw_line_on_array(entry_x, entry_y, exit_x, exit_y)
+            except ValueError:
+                # Skip tangent lines
+                pass
+
+    def _draw_line_on_array(self, x0, y0, x1, y1, line_width=2):
+        """
+        Draw a line on processed_image array by setting pixels to 0.
+        Uses Bresenham's line algorithm.
+
+        Args:
+            x0, y0: Start coordinates
+            x1, y1: End coordinates
+            line_width: Width of line in pixels
+        """
+        height, width = self.processed_image.shape
+
+        # Bresenham's line algorithm
+        dx = abs(x1 - x0)
+        dy = abs(y1 - y0)
+        sx = 1 if x0 < x1 else -1
+        sy = 1 if y0 < y1 else -1
+        err = dx - dy
+
+        while True:
+            # Set pixel and surrounding pixels to 0 (white) for line width
+            for dx_offset in range(-line_width, line_width + 1):
+                for dy_offset in range(-line_width, line_width + 1):
+                    px = x0 + dx_offset
+                    py = y0 + dy_offset
+                    if 0 <= px < width and 0 <= py < height:
+                        self.processed_image[py, px] = 0.0
+
+            if x0 == x1 and y0 == y1:
+                break
+
+            e2 = 2 * err
+            if e2 > -dy:
+                err -= dy
+                x0 += sx
+            if e2 < dx:
+                err += dx
+                y0 += sy
 
     def save(self, output_path):
         """Save the processed image to a file."""
