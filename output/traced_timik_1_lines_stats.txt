@@ -1,0 +1,47 @@
+======================================================================
+Line Tracing Algorithm - Statistics for 1 Lines
+======================================================================
+
+Configuration:
+  Input image: images/timik.jpg
+  Sinogram angles: 1000
+  Avoid traced lines: True
+  Recalculate Radon every: Disabled
+
+Performance:
+  Load time: 25.33 seconds
+  Trace time: 2.08 seconds
+  Render time: 0.01 seconds
+  Total time: 27.43 seconds
+  Lines per second: 0.5
+
+Path Statistics:
+  Total steps: 1
+  Unique lines: 1
+  Efficiency: 1/1 = 100.0%
+  MSE vs original: 0.291082
+
+Value Statistics:
+  Starting value: 788.3722
+  Ending value: 788.3722
+  Value drop: 0.0000 (0.00%)
+  Min value: 788.3722
+  Max value: 788.3722
+  Mean value: 788.3722
+  Median value: 788.3722
+
+Quality Distribution:
+  High quality (>99% of max):      1 lines (100.0%)
+  Medium quality (95-99% of max):    0 lines (  0.0%)
+  Lower quality (<95% of max):      0 lines (  0.0%)
+
+Angle Coverage:
+  Phi range: [180.7deg, 180.7deg]
+  Theta range: [9.7deg, 9.7deg]
+  Unique phi positions: 1
+  Unique theta angles: 1
+
+Sample of traced lines (first 50 and last 50):
+Step   Phi (deg)    Theta (deg)    Value     
+--------------------------------------------------
+0      180.72       9.72           788.3722  

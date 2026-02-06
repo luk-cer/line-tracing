@@ -1,5 +1,5 @@
 ======================================================================
-Line Tracing Algorithm - Statistics for 100 Lines
+Line Tracing Algorithm - Statistics for 30 Lines
 ======================================================================
 
 Configuration:
@@ -9,37 +9,37 @@ Configuration:
   Recalculate Radon every: 10
 
 Performance:
-  Load time: 26.27 seconds
-  Trace time: 250.25 seconds
+  Load time: 25.14 seconds
+  Trace time: 74.37 seconds
   Render time: 0.02 seconds
-  Total time: 276.54 seconds
+  Total time: 99.52 seconds
   Lines per second: 0.4
 
 Path Statistics:
-  Total steps: 100
-  Unique lines: 48
-  Efficiency: 48/100 = 48.0%
-  MSE vs original: 0.291364
+  Total steps: 30
+  Unique lines: 28
+  Efficiency: 28/30 = 93.3%
+  MSE vs original: 0.291513
 
 Value Statistics:
   Starting value: 788.3722
-  Ending value: 624.0205
-  Value drop: 164.3517 (20.85%)
-  Min value: 624.0205
+  Ending value: 739.1158
+  Value drop: 49.2564 (6.25%)
+  Min value: 736.2656
   Max value: 788.3722
-  Mean value: 688.4252
-  Median value: 669.1442
+  Mean value: 764.8580
+  Median value: 766.4517
 
 Quality Distribution:
-  High quality (>99% of max):     10 lines ( 10.0%)
-  Medium quality (95-99% of max):   10 lines ( 10.0%)
-  Lower quality (<95% of max):     80 lines ( 80.0%)
+  High quality (>99% of max):     10 lines ( 33.3%)
+  Medium quality (95-99% of max):   10 lines ( 33.3%)
+  Lower quality (<95% of max):     10 lines ( 33.3%)
 
 Angle Coverage:
-  Phi range: [3.0deg, 181.4deg]
-  Theta range: [0.0deg, 179.8deg]
-  Unique phi positions: 28
-  Unique theta angles: 24
+  Phi range: [15.2deg, 181.4deg]
+  Theta range: [6.5deg, 22.1deg]
+  Unique phi positions: 17
+  Unique theta angles: 15
 
 Sample of traced lines (first 50 and last 50):
 Step   Phi (deg)    Theta (deg)    Value     
@@ -74,23 +74,3 @@ Step   Phi (deg)    Theta (deg)    Value
 27     15.20        7.38           739.7637  
 28     179.56       7.74           740.3616  
 29     15.92        6.48           739.1158  
-30     15.92        6.48           708.9241  
-31     177.04       6.84           713.0818  
-32     16.64        8.82           711.2410  
-33     181.00       9.18           705.8756  
-34     17.36        8.82           711.2410  
-35     180.28       7.74           710.0883  
-36     15.20        7.38           709.5151  
-37     179.56       7.74           710.0883  
-38     15.92        6.48           708.9241  
-39     177.04       7.02           712.2979  
-40     177.04       7.74           683.4628  
-41     18.44        9.36           686.2643  
-42     180.28       7.74           681.8331  
-43     15.20        5.76           681.4811  
-44     176.32       179.64         684.8219  
-45     2.96         179.28         686.6841  
-46     175.60       179.64         684.8219  
-47     3.68         179.82         685.8422  
-48     175.96       179.64         684.8219  
-49     3.32         179.10         686.5181  

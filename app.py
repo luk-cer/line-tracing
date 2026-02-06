@@ -13,8 +13,7 @@ class ImageProcessor:
         self.original_grayscale = None  # For MSE calculation
         self.sinogram = None
         self.angles = None
-        self.coord_cache = {}  # Cache for (phi, theta) -> (row, col) mappings
-        self.sinogram_value_cache = {}  # Cache for (phi, theta) -> value
+        self.coord_cache = {}  # Cache for (phi, theta) -> (row, col) - built once, never rebuilt
 
     def load(self, image_path):
         """
@@ -91,9 +90,6 @@ class ImageProcessor:
         if not self.coord_cache:
             self._build_coord_cache()
 
-        # Build/rebuild value cache (depends on sinogram values)
-        self._build_value_cache()
-
         return self.sinogram
 
     def _build_coord_cache(self):
@@ -123,46 +119,8 @@ class ImageProcessor:
         # Store coordinates in cache
         for phi_idx in range(360):
             for theta_idx, theta in enumerate(all_thetas):
-                key = (round(all_phis[phi_idx], 1), round(theta, 3))
+                key = (int(all_phis[phi_idx]), round(theta, 3))
                 self.coord_cache[key] = (rows[phi_idx, theta_idx], cols[phi_idx, theta_idx])
-
-    def _build_value_cache(self):
-        """
-        Pre-calculate interpolated sinogram values using cached coordinates.
-        This needs to be rebuilt whenever sinogram values change (Radon recalc).
-        """
-        self.sinogram_value_cache.clear()
-
-        print("  Building value cache...")
-
-        # Collect all coordinates from coord_cache for vectorized interpolation
-        all_phis = np.arange(360, dtype=np.float64)
-        all_thetas = self.angles.astype(np.float64)
-
-        # Build arrays of row/col coordinates for ALL (phi, theta) pairs
-        rows_list = []
-        cols_list = []
-
-        for phi_idx in range(360):
-            for theta in all_thetas:
-                key = (round(all_phis[phi_idx], 1), round(theta, 3))
-                row, col = self.coord_cache[key]
-                rows_list.append(row)
-                cols_list.append(col)
-
-        # Single vectorized interpolation call (replaces 360k individual calls!)
-        coords = np.array([rows_list, cols_list])
-        all_values = map_coordinates(self.sinogram, coords, order=1, mode='nearest')
-
-        # Reshape and store in cache
-        all_values = all_values.reshape(360, len(all_thetas))
-
-        for phi_idx in range(360):
-            phi_key = round(all_phis[phi_idx], 1)
-            self.sinogram_value_cache[phi_key] = {
-                'values': all_values[phi_idx, :],
-                'thetas': all_thetas
-            }
 
     def map_polar_to_sinogram(self, phi, theta):
         """
@@ -305,8 +263,8 @@ class ImageProcessor:
 
         Args:
             phi: Angle of point on unit circle (degrees, 0-360)
-            traced_lines: Optional set of (row, col) tuples representing
-                         already traced lines to exclude from search
+            traced_lines: Optional set of frozensets representing traced lines as
+                         unordered pairs of (phi_entry, phi_exit)
 
         Returns:
             tuple: (theta_max, value_max) where theta_max is the angle
@@ -322,53 +280,57 @@ class ImageProcessor:
         if traced_lines is None:
             traced_lines = set()
 
-        # Use pre-computed cache for fast argmax lookup
-        phi_key = round(phi % 360, 1)
-        cached_data = self.sinogram_value_cache.get(phi_key)
+        phi_key = round(phi) % 360  # Round to integer then wrap to [0, 359]
 
-        if cached_data is not None:
-            values = cached_data['values'].copy()  # Copy to avoid modifying cache
-            thetas = cached_data['thetas']
-
-            # Mask out already traced lines
-            if traced_lines:
-                for i, theta in enumerate(thetas):
-                    row, col = self.map_polar_to_sinogram(phi, theta)
-                    row_key = round(row, 1)
-                    col_key = round(col, 1)
-                    if (row_key, col_key) in traced_lines:
-                        values[i] = -np.inf
-
-            # Use numpy argmax to find best theta in O(1)
-            max_idx = np.argmax(values)
-            max_value = values[max_idx]
-
-            if max_value == -np.inf:
-                raise ValueError(f"No valid theta found for phi={phi:.2f}deg (all lines already traced)")
-
-            return (float(thetas[max_idx]), float(max_value))
-
-        # Fallback to loop-based method if cache not available
-        max_value = -np.inf
-        max_theta = 0
+        # Collect cached coordinates for all theta at this phi
+        rows_list = []
+        cols_list = []
+        thetas_list = []
 
         for theta in self.angles:
-            row, col = self.map_polar_to_sinogram(phi, theta)
-            row_key = round(row, 1)
-            col_key = round(col, 1)
+            key = (phi_key, round(theta, 3))
+            if key in self.coord_cache:
+                row, col = self.coord_cache[key]
+                rows_list.append(row)
+                cols_list.append(col)
+                thetas_list.append(theta)
 
-            if (row_key, col_key) in traced_lines:
-                continue
+        if not rows_list:
+            raise ValueError(f"No cached coordinates found for phi={phi:.2f}deg")
 
-            value = self.get_sinogram_value(phi, theta)
-            if value > max_value:
-                max_value = value
-                max_theta = theta
+        # Vectorized interpolation - get all values at once from current sinogram
+        coords = np.array([rows_list, cols_list])
+        values = map_coordinates(self.sinogram, coords, order=1, mode='nearest')
+
+        # Filter out already traced lines and tangent lines
+        if traced_lines:
+            for i, theta in enumerate(thetas_list):
+                try:
+                    phi_exit = self.get_exit_point(phi, theta)
+                    # Create unordered pair (line identifier)
+                    line_id = frozenset({round(phi, 1), round(phi_exit, 1)})
+                    if line_id in traced_lines:
+                        values[i] = -np.inf
+                except ValueError:
+                    # Tangent line - skip it
+                    values[i] = -np.inf
+        else:
+            # No traced_lines tracking, but still filter out tangent lines
+            for i, theta in enumerate(thetas_list):
+                try:
+                    self.get_exit_point(phi, theta)
+                except ValueError:
+                    # Tangent line - skip it
+                    values[i] = -np.inf
+
+        # Use numpy argmax to find best theta
+        max_idx = np.argmax(values)
+        max_value = values[max_idx]
 
         if max_value == -np.inf:
             raise ValueError(f"No valid theta found for phi={phi:.2f}deg (all lines already traced)")
 
-        return (float(max_theta), float(max_value))
+        return (float(thetas_list[max_idx]), float(max_value))
 
     def find_global_max(self, traced_lines=None):
         """
@@ -379,8 +341,8 @@ class ImageProcessor:
         global maximum.
 
         Args:
-            traced_lines: Optional set of (row, col) tuples representing
-                         already traced lines to exclude from search
+            traced_lines: Optional set of frozensets representing traced lines as
+                         unordered pairs of (phi_entry, phi_exit)
 
         Returns:
             tuple: (phi_max, theta_max, value_max) where phi_max and
@@ -396,12 +358,15 @@ class ImageProcessor:
         if traced_lines is None:
             traced_lines = set()
 
-        # Search over phi values (sample every degree for good coverage)
+        # Search over phi values (sample 500 positions around circle)
         global_max_value = -np.inf
         global_max_phi = 0
         global_max_theta = 0
 
-        for phi in range(360):
+        # Sample 500 positions evenly around the circle
+        phi_samples = np.linspace(0, 360, 500, endpoint=False)
+
+        for phi in phi_samples:
             try:
                 theta_max, value_max = self.find_max_theta_for_phi(phi, traced_lines)
                 if value_max > global_max_value:
@@ -446,22 +411,24 @@ class ImageProcessor:
         if self.original_processed_image is None:
             raise ValueError("No backup image available. Call load() first.")
 
-        # Track traced lines if avoiding them
+        # Track traced lines as unordered pairs of endpoints
         traced_lines = set() if avoid_traced else None
 
         # Find global maximum as starting point
         phi, theta, value = self.find_global_max(traced_lines)
 
-        # Mark this line as traced
+        # Calculate exit point and mark this line as traced
+        phi_exit_initial = self.get_exit_point(phi, theta)
         if avoid_traced:
-            row, col = self.map_polar_to_sinogram(phi, theta)
-            traced_lines.add((round(row, 1), round(col, 1)))
+            # Store line as unordered pair of endpoints (rounded to 1 decimal)
+            line_id = frozenset({round(phi, 1), round(phi_exit_initial, 1)})
+            traced_lines.add(line_id)
 
         # Initialize path with starting point
         path = [(phi, theta, value)]
 
         # Traverse for num_steps
-        for i in range(num_steps - 1):
+        for _ in range(num_steps - 1):
             # Get exit point
             phi_exit = self.get_exit_point(phi, theta)
 
@@ -473,10 +440,11 @@ class ImageProcessor:
                 print(f"Warning: Stopped after {len(path)} steps - {str(e)}")
                 break
 
-            # Mark this line as traced
+            # Calculate the exit point of the new line and mark as traced
+            phi_exit_new = self.get_exit_point(phi_exit, theta_new)
             if avoid_traced:
-                row, col = self.map_polar_to_sinogram(phi_exit, theta_new)
-                traced_lines.add((round(row, 1), round(col, 1)))
+                line_id = frozenset({round(phi_exit, 1), round(phi_exit_new, 1)})
+                traced_lines.add(line_id)
 
             # Add to path
             path.append((phi_exit, theta_new, value_new))
@@ -485,19 +453,32 @@ class ImageProcessor:
             if recalc_radon_every > 0 and len(path) % recalc_radon_every == 0:
                 print(f"  Recalculating Radon transform at step {len(path)}...")
 
-                # Reset processed image from backup
-                self.processed_image = self.original_processed_image.copy()
-
-                # Erase only the last N lines
+                # Use incremental Radon subtraction instead of full recalc
                 start_idx = max(0, len(path) - recalc_radon_every)
                 lines_to_erase = path[start_idx:]
-                self.erase_lines_from_image(lines_to_erase)
 
-                # Recalculate sinogram with erased lines
-                self.sinogram = radon(self.processed_image, theta=self.angles, circle=True)
+                # Create blank image and draw only the lines to subtract
+                lines_only = np.zeros_like(self.processed_image)
+                height, width = lines_only.shape
+                center_y, center_x = height // 2, width // 2
+                radius = min(center_x, center_y)
 
-                # Rebuild only VALUE cache (coordinates don't change)
-                self._build_value_cache()
+                for phi, theta, value in lines_to_erase:
+                    phi_rad = phi * np.pi / 180.0
+                    entry_x = int(center_x + radius * np.cos(phi_rad))
+                    entry_y = int(center_y + radius * np.sin(phi_rad))
+
+                    phi_exit = self.get_exit_point(phi, theta)
+                    phi_exit_rad = phi_exit * np.pi / 180.0
+                    exit_x = int(center_x + radius * np.cos(phi_exit_rad))
+                    exit_y = int(center_y + radius * np.sin(phi_exit_rad))
+
+                    # Draw line on blank image as black (1)
+                    self._draw_line_value(lines_only, entry_x, entry_y, exit_x, exit_y, 1.0)
+
+                # Calculate Radon of just these lines and subtract from current sinogram
+                lines_sinogram = radon(lines_only, theta=self.angles, circle=True)
+                self.sinogram = self.sinogram - lines_sinogram
 
             # Update current position
             phi = phi_exit
@@ -641,6 +622,47 @@ class ImageProcessor:
                     py = y0 + dy_offset
                     if 0 <= px < width and 0 <= py < height:
                         self.processed_image[py, px] = 0.0
+
+            if x0 == x1 and y0 == y1:
+                break
+
+            e2 = 2 * err
+            if e2 > -dy:
+                err -= dy
+                x0 += sx
+            if e2 < dx:
+                err += dx
+                y0 += sy
+
+    def _draw_line_value(self, array, x0, y0, x1, y1, value, line_width=2):
+        """
+        Draw a line on given array with specified value.
+        Uses Bresenham's line algorithm.
+
+        Args:
+            array: Numpy array to draw on
+            x0, y0: Start coordinates
+            x1, y1: End coordinates
+            value: Value to set pixels to
+            line_width: Width of line in pixels
+        """
+        height, width = array.shape
+
+        # Bresenham's line algorithm
+        dx = abs(x1 - x0)
+        dy = abs(y1 - y0)
+        sx = 1 if x0 < x1 else -1
+        sy = 1 if y0 < y1 else -1
+        err = dx - dy
+
+        while True:
+            # Set pixel and surrounding pixels to specified value for line width
+            for dx_offset in range(-line_width, line_width + 1):
+                for dy_offset in range(-line_width, line_width + 1):
+                    px = x0 + dx_offset
+                    py = y0 + dy_offset
+                    if 0 <= px < width and 0 <= py < height:
+                        array[py, px] = value
 
             if x0 == x1 and y0 == y1:
                 break
