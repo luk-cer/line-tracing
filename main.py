@@ -20,8 +20,9 @@ from app import ImageProcessor
 @click.option('--output-dir', '-o', default='output', type=click.Path(), help='Output directory for results')
 @click.option('--sinogram-angles', '-s', default=1000, type=int, help='Number of angles for sinogram calculation')
 @click.option('--avoid-traced/--no-avoid-traced', default=True, help='Avoid retracing lines')
+@click.option('--recalc-radon-every', '-r', default=50, type=int, help='Recalculate Radon transform every N lines (0 to disable)')
 @click.option('--verbose', '-v', is_flag=True, help='Print detailed progress information')
-def main(num_lines, image, output_dir, sinogram_angles, avoid_traced, verbose):
+def main(num_lines, image, output_dir, sinogram_angles, avoid_traced, recalc_radon_every, verbose):
     """Line tracing algorithm using Radon transform and sinogram optimization."""
 
     # Print header
@@ -54,7 +55,7 @@ def main(num_lines, image, output_dir, sinogram_angles, avoid_traced, verbose):
     click.echo(f"Tracing {num_lines} lines ({avoid_text} line avoidance)...")
 
     trace_start = time.time()
-    path = processor.traverse_circle(num_lines, avoid_traced=avoid_traced)
+    path = processor.traverse_circle(num_lines, avoid_traced=avoid_traced, recalc_radon_every=recalc_radon_every)
     trace_time = time.time() - trace_start
 
     click.echo(f"Successfully traced {len(path)} lines in {trace_time:.2f} seconds")
@@ -70,11 +71,16 @@ def main(num_lines, image, output_dir, sinogram_angles, avoid_traced, verbose):
     for phi, theta in zip(phis, thetas):
         unique_lines.add((round(phi, 1), round(theta, 1)))
 
+    # Calculate MSE
+    click.echo("Calculating MSE...")
+    mse = processor.calculate_mse(path)
+
     # Print statistics
     click.echo("Path statistics:")
     click.echo(f"  Total steps: {len(path)}")
     click.echo(f"  Unique lines: {len(unique_lines)}")
     click.echo(f"  Efficiency: {len(unique_lines)}/{len(path)} = {len(unique_lines)/len(path)*100:.1f}%")
+    click.echo(f"  MSE vs original: {mse:.6f}")
     click.echo()
 
     if verbose:
@@ -131,7 +137,8 @@ def main(num_lines, image, output_dir, sinogram_angles, avoid_traced, verbose):
         f.write("Configuration:\n")
         f.write(f"  Input image: {image}\n")
         f.write(f"  Sinogram angles: {sinogram_angles}\n")
-        f.write(f"  Avoid traced lines: {avoid_traced}\n\n")
+        f.write(f"  Avoid traced lines: {avoid_traced}\n")
+        f.write(f"  Recalculate Radon every: {recalc_radon_every if recalc_radon_every > 0 else 'Disabled'}\n\n")
 
         f.write("Performance:\n")
         f.write(f"  Load time: {load_time:.2f} seconds\n")
@@ -143,7 +150,8 @@ def main(num_lines, image, output_dir, sinogram_angles, avoid_traced, verbose):
         f.write("Path Statistics:\n")
         f.write(f"  Total steps: {len(path)}\n")
         f.write(f"  Unique lines: {len(unique_lines)}\n")
-        f.write(f"  Efficiency: {len(unique_lines)}/{len(path)} = {len(unique_lines)/len(path)*100:.1f}%\n\n")
+        f.write(f"  Efficiency: {len(unique_lines)}/{len(path)} = {len(unique_lines)/len(path)*100:.1f}%\n")
+        f.write(f"  MSE vs original: {mse:.6f}\n\n")
 
         f.write("Value Statistics:\n")
         f.write(f"  Starting value: {values[0]:.4f}\n")
