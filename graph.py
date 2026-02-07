@@ -1,3 +1,5 @@
+import numpy as np
+
 class AttributeProxy:
     """Helper to allow graph.edges.attr_name[indices] syntax."""
     def __init__(self, data_ref, mask_ref, attr_map):

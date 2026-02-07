@@ -1,7 +1,10 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "Bash(cmd /c dir \"c:\\\\Users\\\\lukas\\\\line-tracing\\\\output\\\\traced_v2_*.png\")",
+      "Bash(pip install:*)",
+      "Bash(where:*)"
     ]
   }
 }

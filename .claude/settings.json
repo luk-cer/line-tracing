@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cmd /c type \"C:\\\\Users\\\\lukas\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-lukas-line-tracing\\\\tasks\\\\bcbea8e.output\")"
+    ]
+  }
+}
